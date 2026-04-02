@@ -5,12 +5,13 @@ from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QToolBar, QMenu, QInputDialog, QMessageBox,
-    QLabel, QFileDialog, QApplication, QProgressBar,
+    QLabel, QFileDialog, QApplication, QProgressBar, QDialog,
 )
 
 from conduit.model.nodes import FolderNode, AssetNode, TaskNode
 from conduit.model.project import Project
 from conduit.model.scanner import scan_data_tree
+from conduit.model.settings import ClientSettings
 from conduit.git_layer.repo import ConduitRepo, GitError, MergeConflictError
 from conduit.model.openers import APP_OPENERS, open_file
 from conduit.ui.items import CustomTitleBar
@@ -21,6 +22,7 @@ from conduit.ui.main_window_layout.files_pane import FilePane
 from conduit.ui.dialogs.new_project_dialog import NewProjectDialog
 from conduit.ui.dialogs.clone_dialog import CloneDialog
 from conduit.ui.dialogs.commit_dialog import CommitDialog
+from conduit.ui.dialogs.settings_dialog import SettingsDialog
 
 from conduit import __version__
 
@@ -70,9 +72,10 @@ class MainWindow(QMainWindow):
         self._worker:         _GitWorker | None = None
         self._fetch_worker:   _GitWorker | None = None
         self._commits_behind: int = 0
+        self._settings:        ClientSettings = ClientSettings.load()
 
         self._fetch_timer = QTimer(self)
-        self._fetch_timer.setInterval(10 * 60 * 1000)   # 10 minutes
+        self._fetch_timer.setInterval(self._settings.fetch_interval_minutes * 60 * 1000)
         self._fetch_timer.timeout.connect(self._on_fetch_tick)
 
         # --- Central widget ---
@@ -151,7 +154,16 @@ class MainWindow(QMainWindow):
 
     def _show_projects_menu(self) -> None:
         menu = QMenu(self)
-        menu.addAction("New Project…",   self._new_project)
+        menu.addAction("New Project…", self._new_project)
+
+        recent = self._settings.get_recent_projects(5)
+        if recent:
+            for path in recent:
+                label = Path(path).name
+                action = menu.addAction(label)
+                action.triggered.connect(lambda checked, p=path: self._open_project_path(Path(p)))
+            menu.addSeparator()
+
         menu.addAction("Open Project…",  self._open_project)
         menu.addAction("Clone Project…", self._clone_project)
         pos = self.toolbar.mapToGlobal(self.toolbar.rect().bottomLeft())
@@ -204,10 +216,10 @@ class MainWindow(QMainWindow):
         if not self._repo or not self._repo.has_remote():
             return
         if self._fetch_worker and self._fetch_worker.isRunning():
-            return  # previous fetch still in progress
+            return
         worker = _GitWorker(self._repo.fetch)
         worker.success.connect(lambda _: self._after_silent_fetch())
-        worker.error.connect(lambda _: None)   # fetch errors are silent
+        worker.error.connect(lambda _: None)
         self._fetch_worker = worker
         worker.start()
 
@@ -217,6 +229,12 @@ class MainWindow(QMainWindow):
             return
         self._commits_behind = self._repo.commits_behind()
         self._refresh_footer()
+        if (
+            self._settings.auto_pull_after_fetch
+            and self._commits_behind > 0
+            and self._repo.has_remote()
+        ):
+            self._on_pull()
 
     # ------------------------------------------------------------------
     # Project loading
@@ -235,11 +253,14 @@ class MainWindow(QMainWindow):
         self._refresh_footer()
         self._set_status("Project loaded", "#88cc88")
 
-        # Start background fetch cadence
         self._fetch_timer.stop()
+        self._fetch_timer.setInterval(self._settings.fetch_interval_minutes * 60 * 1000)
+        self._settings.add_project(project.root_path)
         if repo is not None and repo.has_remote():
-            self._on_fetch_tick()           # immediate silent fetch
+            self._on_fetch_tick()
             self._fetch_timer.start()
+            if self._settings.pull_on_startup:
+                self._on_pull()
 
     # ------------------------------------------------------------------
     # Pane selection handlers
@@ -519,9 +540,12 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Open Conduit Project")
         if not path:
             return
+        self._open_project_path(Path(path))
+
+    def _open_project_path(self, path: Path) -> None:
         try:
-            project = Project.load(Path(path))
-            repo    = ConduitRepo.open(Path(path))
+            project = Project.load(path)
+            repo    = ConduitRepo.open(path)
         except FileNotFoundError as e:
             QMessageBox.warning(self, "Not a Conduit project", str(e))
             return
@@ -711,7 +735,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _open_settings(self) -> None:
-        QMessageBox.information(self, "Settings", "Settings — coming soon.")
+        dlg = SettingsDialog(self._settings, self)
+        if dlg.exec() == QDialog.Accepted:
+            self._fetch_timer.setInterval(self._settings.fetch_interval_minutes * 60 * 1000)
 
     def _open_console(self) -> None:
         QMessageBox.information(self, "Console", "Console — coming soon.")
