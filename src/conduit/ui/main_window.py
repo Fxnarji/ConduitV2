@@ -12,6 +12,7 @@ from conduit.model.nodes import FolderNode, AssetNode, TaskNode
 from conduit.model.project import Project
 from conduit.model.scanner import scan_data_tree
 from conduit.model.settings import ClientSettings
+from conduit.model.blender_installer import blender_executable_for
 from conduit.git_layer.repo import ConduitRepo, GitError, MergeConflictError
 from conduit.model.openers import APP_OPENERS, open_file
 from conduit.ui.items import CustomTitleBar
@@ -23,6 +24,7 @@ from conduit.ui.dialogs.new_project_dialog import NewProjectDialog
 from conduit.ui.dialogs.clone_dialog import CloneDialog
 from conduit.ui.dialogs.commit_dialog import CommitDialog
 from conduit.ui.dialogs.settings_dialog import SettingsDialog
+from conduit.ui.dialogs.project_settings_dialog import ProjectSettingsDialog
 
 from conduit import __version__
 
@@ -73,6 +75,7 @@ class MainWindow(QMainWindow):
         self._fetch_worker:   _GitWorker | None = None
         self._commits_behind: int = 0
         self._settings:        ClientSettings = ClientSettings.load()
+        self._blender_opener: dict[str, str] = {}
 
         self._fetch_timer = QTimer(self)
         self._fetch_timer.setInterval(self._settings.fetch_interval_minutes * 60 * 1000)
@@ -149,6 +152,7 @@ class MainWindow(QMainWindow):
 
     def _build_toolbar(self) -> None:
         self.toolbar.addAction("Projects").triggered.connect(self._show_projects_menu)
+        self.toolbar.addAction("Project Settings").triggered.connect(self._open_project_settings)
         self.toolbar.addAction("Settings").triggered.connect(self._open_settings)
         self.toolbar.addAction("Console").triggered.connect(self._open_console)
 
@@ -256,6 +260,7 @@ class MainWindow(QMainWindow):
         self._fetch_timer.stop()
         self._fetch_timer.setInterval(self._settings.fetch_interval_minutes * 60 * 1000)
         self._settings.add_project(project.root_path)
+        self._refresh_blender_opener()
         if repo is not None and repo.has_remote():
             self._on_fetch_tick()
             self._fetch_timer.start()
@@ -475,6 +480,30 @@ class MainWindow(QMainWindow):
         if not file_path or not file_path.exists():
             QMessageBox.information(self, "No file", "No file to open.")
             return
+
+        if file_path.suffix.lower() == ".blend":
+            enforced = self._project and self._project.config.blender_force_version
+            blender_exe = self._blender_opener.get(".blend")
+
+            if enforced and not blender_exe:
+                link = self._project.config.blender_version_link or ""
+                url_display = f"https://download.blender.org/release/{link}"
+                reply = QMessageBox.question(
+                    self,
+                    "Blender Not Installed",
+                    f"Blender is enforced for this project but is not installed.\n\n"
+                    f"Download from:\n{url_display}\n\nDownload now?",
+                    QMessageBox.Yes | QMessageBox.No,  # type: ignore
+                )
+                if reply == QMessageBox.Yes:  # type: ignore
+                    self._open_project_settings()
+                return
+
+            if blender_exe:
+                import subprocess
+                subprocess.Popen([blender_exe, "--app-template", "conduit", str(file_path)])
+                return
+
         open_file(file_path, APP_OPENERS)
 
     # ------------------------------------------------------------------
@@ -738,6 +767,21 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self._settings, self)
         if dlg.exec() == QDialog.Accepted:
             self._fetch_timer.setInterval(self._settings.fetch_interval_minutes * 60 * 1000)
+
+    def _open_project_settings(self) -> None:
+        if not self._project:
+            QMessageBox.information(self, "No Project", "Open a project first.")
+            return
+        dlg = ProjectSettingsDialog(self._project, self)
+        if dlg.exec() == QDialog.Accepted:
+            self._refresh_blender_opener()
+
+    def _refresh_blender_opener(self) -> None:
+        if self._project and self._project.config.blender_force_version:
+            exe = blender_executable_for(self._project.root_path)
+            self._blender_opener = {".blend": str(exe)} if exe else {}
+        else:
+            self._blender_opener = {}
 
     def _open_console(self) -> None:
         QMessageBox.information(self, "Console", "Console — coming soon.")

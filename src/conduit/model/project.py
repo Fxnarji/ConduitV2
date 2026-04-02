@@ -14,6 +14,8 @@ class ProjectConfig:
     blender_version: str | None = None
     lfs_patterns: list[str] = field(default_factory=list)
     version: int = 1
+    blender_force_version: bool = False
+    blender_version_link: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> ProjectConfig:
@@ -23,6 +25,8 @@ class ProjectConfig:
             blender_version=data.get("blender_version"),
             lfs_patterns=data.get("lfs_patterns", []),
             version=data.get("version", 1),
+            blender_force_version=data.get("blender_force_version", False),
+            blender_version_link=data.get("blender_version_link"),
         )
 
     def to_dict(self) -> dict:
@@ -32,6 +36,8 @@ class ProjectConfig:
             "git_remote": self.git_remote,
             "blender_version": self.blender_version,
             "lfs_patterns": self.lfs_patterns,
+            "blender_force_version": self.blender_force_version,
+            "blender_version_link": self.blender_version_link,
         }
 
 
