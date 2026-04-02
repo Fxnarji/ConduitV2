@@ -1,0 +1,57 @@
+Conduit-v2 is a git lfs wrapper + file manager for artists. Its a pipeline tool to 
+ensure a single source of truth for game dev sourcefiles. 
+Its written in Python with PySide and therefor a native desktop app. 
+
+Project Structure:
+each conduit project has a specific folder Structure:
+
+CONDUIT-PROJECT
+│   .gitignore
+├───.git
+├───00-data
+│   └───MyFolder
+│       └───MyAsset
+│           ├───MyModellingTask
+│           │       MyAsset-modelling.blend
+│           └───MyTexturingTask
+│           │       MyAsset-texturing.spp
+├───01-conf
+├───02-ressources
+└───_cache
+
+00-data:
+this is the users playground. They can make as many folders and subfolders as they want. 
+They are real folders on disk, so they follow regular folder rules (each folder can only exist once, can only be in once folder etc)
+Folder can contain subfolders and Assets.
+
+Assets
+an Asset is a folder with tasks
+
+Task
+a Task is a folder with the actual source file
+
+Assets and tasks are created by the system via 
+right click on folder > create Asset or right click on tasklist > create tasklist. 
+
+!The main idea is to stop artists from moving files into the wrong locations, hence forcing them to put them in the right place!
+
+01-conf
+this is where project specific settings are set. Think project name, github remote, blender version etc
+
+02-ressources
+this is where additional ressources can be stored such as blender addons
+
+_cache
+/cache/* is in gitignore and is used to store temp files
+
+
+UI
+the ui is shown in ./conduit_ui_mockup.png
+
+on the left side is the folder pane showing folders and Assets
+
+in the middle is the tasklist and a button segment.
+The buttons should be github related things, but can be omitted for now
+
+on the right is the git historie of the tasks source file
+

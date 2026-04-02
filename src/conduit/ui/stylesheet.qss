@@ -1,0 +1,277 @@
+/* ------------------------------
+   Standard widgets
+   ------------------------------ */
+QWidget {
+    background-color: $main_bg;
+    color: $text_color;
+    font-size: 12px;
+}
+
+QLabel {
+    background: $main_bg;
+}
+
+QStandardItem::item::selected {
+    border: none;
+    outline: none;
+}
+
+QStandardItem::item::hover {
+    border: none;
+    outline: none;
+    background: $button_hover;
+}
+
+/* ------------------------------
+   Generic item views (QListWidget, QTreeView, etc.)
+   ------------------------------ */
+QAbstractItemView {
+    border: 1px solid $border_color;
+    border-radius: 8px;
+    background-color: $layout_bg;
+    selection-background-color: $accent;
+    selection-color: $accent_text;
+}
+
+QAbstractItemView::item {
+    height: 25px;
+    padding: 3px;
+    border: none;
+    outline: none;
+}
+
+QAbstractItemView::item:hover {
+    background-color: $button_hover;
+}
+
+QAbstractItemView::item:focus {
+    border: none;
+    outline: none;
+}
+
+QAbstractItemView::item:selected {
+    background-color: $accent;
+    color: $accent_text;
+    border: none;
+    outline: none;
+}
+
+/* ------------------------------
+   Line edits
+   ------------------------------ */
+QLineEdit {
+    border: none;
+    outline: none;
+    selection-background-color: $accent;
+    selection-color: $accent_text;
+    background: $layout_bg;
+}
+
+QLineEdit:focus {
+    border: none;
+    outline: none;
+}
+
+/* ------------------------------
+   Buttons
+   ------------------------------ */
+QPushButton {
+    background-color: $button_bg;
+    border: 1px solid $border_color;
+    padding: 5px 10px;
+}
+
+QPushButton:hover {
+    background-color: $button_hover;
+}
+
+QPushButton:pressed {
+    background-color: $accent;
+}
+
+QPushButton:disabled {
+    color: $disabled_text;
+}
+
+/* ------------------------------
+   Scrollbars
+   ------------------------------ */
+QScrollBar:vertical, QScrollBar:horizontal {
+    background: $scrollbar_bg;
+    border: none;
+    width: 8px;
+}
+
+QScrollBar::handle {
+    background: $scrollbar_handle;
+    border-radius: 4px;
+}
+
+/* ------------------------------
+   Group boxes
+   ------------------------------ */
+QGroupBox {
+    border: 1px solid $border_color;
+    border-radius: 5px;
+    margin-top: 20px;
+    background-color: $main_bg;
+    color: $text_color;
+    font-weight: bold;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 2px 5px;
+    color: $text_color;
+    background-color: transparent;
+}
+
+/* ------------------------------
+   Menus
+   ------------------------------ */
+QMenu {
+    background-color: $main_bg;
+    color: $text_color;
+    border: 1px solid $border_color;
+    padding: 2px;
+}
+
+QMenu::item {
+    background-color: $main_bg;
+    color: $text_color;
+    padding: 4px 20px;
+}
+
+QMenu::item:selected {
+    background-color: $accent;
+    color: $accent_text;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: $border_color;
+    margin: 4px 0;
+}
+
+/* ------------------------------
+   Files pane — history list
+   ------------------------------ */
+#HistoryList {
+    border: 1px solid $border_color;
+    border-radius: 8px;
+    background-color: $layout_bg;
+}
+
+#HistoryList::item {
+    height: auto;
+    padding: 0px;
+    border-bottom: 1px solid $border_color;
+}
+
+#HistoryList::item:last-child {
+    border-bottom: none;
+}
+
+#FilePaneHeader {
+    font-size: 11px;
+    font-weight: bold;
+    color: $text_color;
+    padding: 2px 4px;
+}
+
+#FilePaneSep {
+    color: $border_color;
+}
+
+/* ------------------------------
+   Detail pane
+   ------------------------------ */
+#DetailTaskName {
+    font-size: 13px;
+    font-weight: bold;
+    color: $text_color;
+}
+
+#DetailSectionHeader {
+    font-size: 10px;
+    color: #888888;
+    font-weight: normal;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+#DetailLockLabel {
+    font-size: 11px;
+}
+
+#DetailSeparator {
+    color: $border_color;
+}
+
+/* ------------------------------
+   Active version indicator bar
+   ------------------------------ */
+#ActiveIndicator {
+    background-color: $accent;
+    border: none;
+    min-height: 1px;
+}
+
+/* ------------------------------
+   Get button (version checkout)
+   ------------------------------ */
+#GetButton {
+    background-color: $button_bg;
+    border: 1px solid $border_color;
+    border-radius: 4px;
+    font-size: 10px;
+    padding: 2px 6px;
+}
+
+#GetButton:hover {
+    background-color: $accent;
+    color: $accent_text;
+    border-color: $accent;
+}
+
+#GetButton:pressed {
+    background-color: $accent;
+    color: $accent_text;
+}
+
+#GetButton:disabled {
+    color: $disabled_text;
+}
+
+/* File item meta line */
+#FileItemMeta {
+    color: #888888;
+    font-size: 10px;
+}
+
+/* ------------------------------
+   Custom title bar
+   ------------------------------ */
+CustomTitleBar QWidget {
+    background-color: $title_bar;
+    color: $text_color;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+CustomTitleBar QPushButton {
+    background-color: $close_button;
+    border: none;
+    color: $text_color;
+}
+
+CustomTitleBar QPushButton:hover {
+    background-color: $close_button_hover;
+    color: $accent_text;
+}
+
+CustomTitleBar QPushButton:pressed {
+    background-color: $accent;
+    color: $accent_text;
+}
