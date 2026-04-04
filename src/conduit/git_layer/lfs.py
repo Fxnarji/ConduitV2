@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -13,16 +14,26 @@ DEFAULT_LFS_PATTERNS: list[str] = [
 ]
 
 
+def _run(cmd: list[str], *, cwd: Path | None = None, check: bool = False) -> subprocess.CompletedProcess:
+    """Run subprocess with Windows console window suppression."""
+    kwargs: dict = {"capture_output": True, "text": True}
+    if cwd is not None:
+        kwargs["cwd"] = cwd
+    if check:
+        kwargs["check"] = True
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return subprocess.run(cmd, **kwargs)
+
+
 def is_lfs_available() -> bool:
     """Return True only if git-lfs is reachable both via 'git lfs' and as a
     standalone binary — the latter is what git hooks use on Windows."""
     try:
-        # Check the git wrapper
-        r = subprocess.run(["git", "lfs", "version"], capture_output=True, text=True)
+        r = _run(["git", "lfs", "version"])
         if r.returncode != 0:
             return False
-        # Also verify the standalone binary is on PATH (required by git hooks)
-        r2 = subprocess.run(["git-lfs", "version"], capture_output=True)
+        r2 = _run(["git-lfs", "version"])
         return r2.returncode == 0
     except FileNotFoundError:
         return False

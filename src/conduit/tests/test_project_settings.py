@@ -1,79 +1,81 @@
-import json
 import sys
 from pathlib import Path
 from conduit.model.project import ProjectConfig
-from conduit.model.blender_installer import BlenderInstaller, blender_executable_for
+from conduit.model.blender_installer import BlenderInstaller, blender_executable_for, _detect_platform
 
 
 class TestProjectConfigBlenderFields:
     def test_blender_fields_default(self):
         cfg = ProjectConfig(name="Test")
         assert cfg.blender_force_version is False
-        assert cfg.blender_version_link is None
+        assert cfg.blender_version is None
 
     def test_blender_fields_serialization(self):
         cfg = ProjectConfig(
             name="Test",
             blender_force_version=True,
-            blender_version_link="Blender5.0/blender-5.0.1-windows-x64.zip",
+            blender_version="5.0.1",
         )
         data = cfg.to_dict()
         assert data["blender_force_version"] is True
-        assert data["blender_version_link"] == "Blender5.0/blender-5.0.1-windows-x64.zip"
+        assert data["blender_version"] == "5.0.1"
 
     def test_blender_fields_roundtrip(self):
         cfg = ProjectConfig(
             name="Test",
             blender_force_version=True,
-            blender_version_link="Blender4.2/blender-4.2.1-linux-x64.zip",
+            blender_version="4.2.1",
         )
         loaded = ProjectConfig.from_dict(cfg.to_dict())
         assert loaded.blender_force_version is True
-        assert loaded.blender_version_link == "Blender4.2/blender-4.2.1-linux-x64.zip"
+        assert loaded.blender_version == "4.2.1"
 
     def test_blender_fields_backward_compat(self):
+        """Old projects with blender_version_link should migrate to blender_version."""
+        data = {
+            "name": "OldProject",
+            "version": 1,
+            "blender_version_link": "Blender4.2/blender-4.2.1-linux-x64.zip",
+            "blender_force_version": True,
+        }
+        cfg = ProjectConfig.from_dict(data)
+        assert cfg.blender_force_version is True
+        assert cfg.blender_version == "4.2.1"
+
+    def test_blender_fields_empty(self):
         data = {"name": "OldProject", "version": 1}
         cfg = ProjectConfig.from_dict(data)
         assert cfg.blender_force_version is False
-        assert cfg.blender_version_link is None
+        assert cfg.blender_version is None
 
 
 class TestBlenderInstaller:
-    def test_status_not_installed(self, tmp_path):
-        inst = BlenderInstaller(
-            "Blender5.0/blender-5.0.1-windows-x64.zip",
-            tmp_path,
+    def test_dirname_construction(self, tmp_path):
+        platform = _detect_platform()
+        inst = BlenderInstaller("5.0.1", tmp_path)
+        assert inst.dirname == f"blender-5.0.1-{platform}"
+
+    def test_url_construction(self, tmp_path):
+        platform = _detect_platform()
+        inst = BlenderInstaller("5.0.1", tmp_path)
+        expected = (
+            f"https://download.blender.org/release/"
+            f"Blender5.0/blender-5.0.1-{platform}.zip"
         )
+        assert inst.url == expected
+
+    def test_status_not_installed(self, tmp_path):
+        inst = BlenderInstaller("5.0.1", tmp_path)
         assert not inst.is_installed
         assert "Not installed" in inst.status()
 
     def test_status_installed(self, tmp_path):
-        inst = BlenderInstaller(
-            "Blender5.0/blender-5.0.1-windows-x64.zip",
-            tmp_path,
-        )
+        inst = BlenderInstaller("5.0.1", tmp_path)
         inst.blender_dir.mkdir(parents=True)
         exec_name = "blender.exe" if sys.platform == "win32" else "blender"
         (inst.blender_dir / exec_name).touch()
         assert inst.is_installed
         assert "Installed" in inst.status()
-
-    def test_parse_dirname(self, tmp_path):
-        inst = BlenderInstaller(
-            "Blender5.0/blender-5.0.1-windows-x64.zip",
-            tmp_path,
-        )
-        assert inst.dirname == "blender-5.0.1-windows-x64"
-
-    def test_url_construction(self, tmp_path):
-        inst = BlenderInstaller(
-            "Blender5.0/blender-5.0.1-windows-x64.zip",
-            tmp_path,
-        )
-        assert inst.url == (
-            "https://download.blender.org/release/"
-            "Blender5.0/blender-5.0.1-windows-x64.zip"
-        )
 
 
 class TestBlenderExecutableFinder:

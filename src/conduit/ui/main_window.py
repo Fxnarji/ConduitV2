@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from pathlib import Path
 
@@ -146,6 +147,32 @@ class MainWindow(QMainWindow):
         self.file_pane.widget().setContextMenuPolicy(Qt.CustomContextMenu)  # type: ignore
         self.file_pane.widget().customContextMenuRequested.connect(self._file_context_menu)
 
+        # --- Startup checks ---
+        QTimer.singleShot(0, self._check_git_installed)
+
+    # ------------------------------------------------------------------
+    # Startup checks
+    # ------------------------------------------------------------------
+
+    def _check_git_installed(self) -> None:
+        import shutil
+        if shutil.which("git") is not None:
+            return
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Git Not Found")
+        msg.setIcon(QMessageBox.Warning)  # type: ignore
+        msg.setText(
+            "Git was not found on your system.\n\n"
+            "Conduit requires Git to manage project files.\n\n"
+            "Download Git from: https://git-scm.com/download/win"
+        )
+        download_btn = msg.addButton("Download Git", QMessageBox.ActionRole)  # type: ignore
+        msg.addButton("OK", QMessageBox.AcceptRole)  # type: ignore
+        msg.exec_()
+        if msg.clickedButton() is download_btn:
+            import webbrowser
+            webbrowser.open("https://git-scm.com/download/win")
+
     # ------------------------------------------------------------------
     # Toolbar
     # ------------------------------------------------------------------
@@ -289,7 +316,7 @@ class MainWindow(QMainWindow):
         if not task:
             return
         self.file_pane.populate(task, self._repo)
-        self._update_detail_pane(task)
+        self._update_detail_pane_async(task)
 
     def _update_detail_pane(self, task: TaskNode | None) -> None:
         """Refresh task info, lock status, and active version in the detail pane."""
@@ -303,6 +330,33 @@ class MainWindow(QMainWindow):
             lock_owner = self._repo.lfs_lock_status(file_path)
         self.detail_pane.set_task(task.name, file_path, lock_owner)
         self.detail_pane.set_checked_out_version(self.file_pane.get_active_version_name())
+
+    def _update_detail_pane_async(self, task: TaskNode | None) -> None:
+        """Fetch lock status in background thread and update detail pane."""
+        if not task or not self._repo:
+            self.detail_pane.set_task(None, None, None)
+            self.detail_pane.set_checked_out_version(None)
+            return
+
+        file_path = self.file_pane.get_current_file()
+
+        def fetch_lock_status():
+            if file_path:
+                return self._repo.lfs_lock_status(file_path)  # type: ignore
+            return None
+
+        def on_success(lock_owner: str | None) -> None:
+            self.detail_pane.set_task(task.name, file_path, lock_owner)
+
+        def on_error(_: str) -> None:
+            self.detail_pane.set_task(task.name, file_path, None)
+
+        self._run_git_async(
+            fetch_lock_status,
+            on_success=on_success,
+            on_error=on_error,
+            status_msg="Checking lock…",
+        )
 
     # ------------------------------------------------------------------
     # Git actions (commit/push/pull)
@@ -322,30 +376,55 @@ class MainWindow(QMainWindow):
         else:
             scope = self._project.data_path if self._project else None
 
-        changed = self._repo.changed_files(under=scope)
-        if not changed:
-            QMessageBox.information(self, "Nothing to commit",
-                                    "No changed files in the selected scope.")
-            return
+        self._set_status("Scanning for changes…", "#e8c46a")
+        self.detail_pane.set_repo_enabled(False)
 
-        dlg = CommitDialog(parent=self)
-        if dlg.exec() != CommitDialog.Accepted:
-            return
+        def scan_changed_files():
+            return self._repo.changed_files(under=scope)  # type: ignore
 
-        msg        = dlg.message
+        def on_scan_success(changed: list[Path]) -> None:
+            self.detail_pane.set_repo_enabled(self._repo is not None)
+            if not changed:
+                self._set_status("", "#aaaaaa")
+                QMessageBox.information(self, "Nothing to commit",
+                                        "No changed files in the selected scope.")
+                return
+
+            dlg = CommitDialog(parent=self)
+            if dlg.exec() != CommitDialog.Accepted:
+                self._set_status("", "#aaaaaa")
+                return
+
+            self._do_commit_and_push(changed, dlg.message)
+
+        def on_scan_error(e: str) -> None:
+            self.detail_pane.set_repo_enabled(self._repo is not None)
+            self._set_status("", "#aaaaaa")
+            QMessageBox.warning(self, "Scan failed", e)
+
+        self._run_git_async(
+            scan_changed_files,
+            on_success=on_scan_success,
+            on_error=on_scan_error,
+            status_msg="Scanning…",
+        )
+
+    def _do_commit_and_push(self, changed: list[Path], msg: str) -> None:
+        if not self._repo:
+            return
         has_remote = self._repo.has_remote()
 
         def commit_then_push():
-            self._repo.stage_and_commit(changed, msg)
+            self._repo.stage_and_commit(changed, msg)  # type: ignore
             if has_remote:
-                self._repo.push()
+                self._repo.push()  # type: ignore
 
         def on_success(_: str) -> None:
             self._set_status("Committed & pushed" if has_remote else "Committed", "#88cc88")
             task = self.task_pane.get_selected_task()
             if task:
                 self.file_pane.populate(task, self._repo)
-                self._update_detail_pane(task)
+                self._update_detail_pane_async(task)
 
         self._run_git_async(
             commit_then_push,
@@ -361,11 +440,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No remote", "This project has no remote configured.")
             return
 
-        # Pre-flight: warn if incoming files overlap with local uncommitted changes
-        incoming = self._repo.incoming_files()
-        if incoming:
-            local_changed = set(self._repo.changed_files())
-            overlap = [f for f in incoming if f in local_changed]
+        # Pre-flight: check for overlap between incoming and locally changed files (async)
+        overlap_holder: list[list[Path]] = [[]]
+
+        def preflight():
+            incoming = self._repo.incoming_files()  # type: ignore
+            if not incoming:
+                return
+            local_changed = set(self._repo.changed_files())  # type: ignore
+            overlap_holder[0] = [f for f in incoming if f in local_changed]
+
+        def on_preflight_done(_: str) -> None:
+            overlap = overlap_holder[0]
             if overlap:
                 names = "\n".join(f"  \u2022 {f.name}" for f in overlap)
                 reply = QMessageBox.warning(
@@ -377,45 +463,77 @@ class MainWindow(QMainWindow):
                 )
                 if reply != QMessageBox.Yes:  # type: ignore
                     return
+            self._run_git_async(
+                self._repo.pull,  # type: ignore
+                on_success=self._after_pull,
+                on_error=self._on_pull_error,
+                status_msg="Pulling…",
+            )
 
         self._run_git_async(
-            self._repo.pull,
-            on_success=self._after_pull,
-            on_error=self._on_pull_error,
-            status_msg="Pulling…",
+            preflight,
+            on_success=on_preflight_done,
+            on_error=lambda e: QMessageBox.warning(self, "Pull failed", e),
+            status_msg="Checking for changes…",
         )
 
     def _on_pull_error(self, msg: str) -> None:
-        if self._repo:
-            conflicts = self._repo.conflicted_files()
+        if not self._repo:
+            QMessageBox.warning(self, "Pull failed", msg)
+            return
+
+        conflicts_holder: list[list[Path]] = [[]]
+
+        def get_conflicts():
+            conflicts_holder[0] = self._repo.conflicted_files()  # type: ignore
+
+        def on_done(_: str) -> None:
+            conflicts = conflicts_holder[0]
             if conflicts:
                 self._handle_merge_conflicts(conflicts)
-                return
-        QMessageBox.warning(self, "Pull failed", msg)
+            else:
+                QMessageBox.warning(self, "Pull failed", msg)
+
+        self._run_git_async(
+            get_conflicts,
+            on_success=on_done,
+            on_error=lambda _: QMessageBox.warning(self, "Pull failed", msg),
+            status_msg="Checking conflicts…",
+        )
 
     def _handle_merge_conflicts(self, conflicts: list[Path]) -> None:
         from conduit.ui.dialogs.conflict_dialog import ConflictDialog
         dlg = ConflictDialog(conflicts, parent=self)
         if dlg.exec() != ConflictDialog.Accepted:
             # User chose Cancel Merge — abort and restore pre-pull state
-            try:
-                self._repo.abort_merge()
-                self._set_status("Merge aborted", "#e8c46a")
-            except GitError as e:
-                QMessageBox.warning(self, "Abort failed", str(e))
+            self._run_git_async(
+                self._repo.abort_merge,  # type: ignore
+                on_success=lambda _: self._set_status("Merge aborted", "#e8c46a"),
+                on_error=lambda e: QMessageBox.warning(self, "Abort failed", e),
+                status_msg="Aborting merge…",
+            )
             return
 
-        try:
-            for f, choice in dlg.resolutions.items():
+        resolutions = dict(dlg.resolutions)
+
+        def do_resolve():
+            for f, choice in resolutions.items():
                 if choice == "ours":
-                    self._repo.resolve_ours(f)
+                    self._repo.resolve_ours(f)  # type: ignore
                 else:
-                    self._repo.resolve_theirs(f)
-            self._repo.commit_merge()
+                    self._repo.resolve_theirs(f)  # type: ignore
+            self._repo.commit_merge()  # type: ignore
+
+        def on_resolve_success(_: str) -> None:
             self._set_status("Conflicts resolved", "#88cc88")
             self._after_pull("")
-        except GitError as e:
-            QMessageBox.warning(self, "Resolution failed", str(e))
+
+        self._run_git_async(
+            do_resolve,
+            on_success=on_resolve_success,
+            on_error=lambda e: QMessageBox.warning(self, "Resolution failed", e),
+            status_msg="Resolving conflicts…",
+        )
 
     def _after_pull(self, _: str) -> None:
         self._set_status("Pulled", "#88cc88")
@@ -437,15 +555,22 @@ class MainWindow(QMainWindow):
         file_path = self.file_pane.get_current_file()
         if not file_path or not self._repo:
             return
-        try:
-            self._repo.checkout_version(file_path, commit_hash)
-        except GitError as e:
-            QMessageBox.warning(self, "Checkout failed", str(e))
-            return
-        self.file_pane.refresh_header()
-        self.file_pane.set_active_commit(commit_hash)
-        self.detail_pane.set_checked_out_version(self.file_pane.get_active_version_name())
-        self._set_status(f"Restored {commit_hash}", "#88cc88")
+
+        def do_checkout():
+            self._repo.checkout_version(file_path, commit_hash)  # type: ignore
+
+        def on_success(_: str) -> None:
+            self.file_pane.refresh_header()
+            self.file_pane.set_active_commit(commit_hash)
+            self.detail_pane.set_checked_out_version(self.file_pane.get_active_version_name())
+            self._set_status(f"Restored {commit_hash}", "#88cc88")
+
+        self._run_git_async(
+            do_checkout,
+            on_success=on_success,
+            on_error=lambda e: QMessageBox.warning(self, "Checkout failed", e),
+            status_msg=f"Restoring {commit_hash}…",
+        )
 
     # ------------------------------------------------------------------
     # Lock / Unlock / Open
@@ -455,25 +580,45 @@ class MainWindow(QMainWindow):
         file_path = self.detail_pane.get_file_path()
         if not file_path or not self._repo:
             return
-        try:
+
+        def do_lock():
             self._repo.lfs_lock(file_path)
+
+        def on_success(_: str) -> None:
             self._set_status("File locked", "#88cc88")
-        except GitError as e:
-            QMessageBox.warning(self, "Lock failed", str(e))
-            return
-        self._update_detail_pane(self.task_pane.get_selected_task())
+            self._update_detail_pane_async(self.task_pane.get_selected_task())
+
+        def on_error(e: str) -> None:
+            QMessageBox.warning(self, "Lock failed", e)
+
+        self._run_git_async(
+            do_lock,
+            on_success=on_success,
+            on_error=on_error,
+            status_msg="Locking…",
+        )
 
     def _on_unlock(self) -> None:
         file_path = self.detail_pane.get_file_path()
         if not file_path or not self._repo:
             return
-        try:
+
+        def do_unlock():
             self._repo.lfs_unlock(file_path)
+
+        def on_success(_: str) -> None:
             self._set_status("File unlocked", "#88cc88")
-        except GitError as e:
-            QMessageBox.warning(self, "Unlock failed", str(e))
-            return
-        self._update_detail_pane(self.task_pane.get_selected_task())
+            self._update_detail_pane_async(self.task_pane.get_selected_task())
+
+        def on_error(e: str) -> None:
+            QMessageBox.warning(self, "Unlock failed", e)
+
+        self._run_git_async(
+            do_unlock,
+            on_success=on_success,
+            on_error=on_error,
+            status_msg="Unlocking…",
+        )
 
     def _on_open_file(self) -> None:
         file_path = self.detail_pane.get_file_path()
@@ -486,25 +631,61 @@ class MainWindow(QMainWindow):
             blender_exe = self._blender_opener.get(".blend")
 
             if enforced and not blender_exe:
-                link = self._project.config.blender_version_link or ""
-                url_display = f"https://download.blender.org/release/{link}"
                 reply = QMessageBox.question(
                     self,
                     "Blender Not Installed",
-                    f"Blender is enforced for this project but is not installed.\n\n"
-                    f"Download from:\n{url_display}\n\nDownload now?",
+                    "Blender is enforced for this project but is not installed.\n\n"
+                    "Would you like to install it now?",
                     QMessageBox.Yes | QMessageBox.No,  # type: ignore
                 )
                 if reply == QMessageBox.Yes:  # type: ignore
-                    self._open_project_settings()
+                    self._install_blender_directly()
                 return
 
             if blender_exe:
-                import subprocess
-                subprocess.Popen([blender_exe, "--app-template", "conduit", str(file_path)])
+                subprocess.Popen(
+                    [blender_exe, "--app-template", "conduit", str(file_path)]
+                )
                 return
 
         open_file(file_path, APP_OPENERS)
+
+    def _install_blender_directly(self) -> None:
+        if not self._project:
+            return
+
+        version = self._project.config.blender_version
+        if not version:
+            QMessageBox.warning(
+                self, "No Version",
+                "No Blender version configured.\n\nSet it in Project Settings first."
+            )
+            return
+
+        from conduit.model.blender_installer import BlenderInstaller
+
+        install_dir = self._project.resources_path / "blender-installs"
+        installer   = BlenderInstaller(version, install_dir)
+
+        def do_install():
+            installer.install()
+
+        def on_success(_: str) -> None:
+            self._set_status("Blender installed", "#88cc88")
+            self._refresh_blender_opener()
+            QMessageBox.information(self, "Blender Installed",
+                                    f"Blender {version} installed successfully.")
+
+        def on_error(msg: str) -> None:
+            self._set_status("Install failed", "#f88888")
+            QMessageBox.warning(self, "Install Failed", msg)
+
+        self._run_git_async(
+            do_install,
+            on_success=on_success,
+            on_error=on_error,
+            status_msg="Installing Blender…",
+        )
 
     # ------------------------------------------------------------------
     # Background worker
@@ -542,13 +723,28 @@ class MainWindow(QMainWindow):
         dlg = NewProjectDialog(self)
         if dlg.exec() != NewProjectDialog.Accepted:
             return
-        try:
-            project = Project.create(dlg.project_path, dlg.project_name, dlg.remote_url)
+
+        project_path = dlg.project_path
+        project_name = dlg.project_name
+        remote_url   = dlg.remote_url
+        result_holder: list = [None, None]
+
+        def do_create():
+            project = Project.create(project_path, project_name, remote_url)
             self._seed_templates(project)
-            repo    = ConduitRepo.open(project.root_path)
-            self.load_project(project, repo)
-        except Exception as e:
-            QMessageBox.warning(self, "Could not create project", str(e))
+            repo = ConduitRepo.open(project.root_path)
+            result_holder[0] = project
+            result_holder[1] = repo
+
+        def on_success(_: str) -> None:
+            self.load_project(result_holder[0], result_holder[1])
+
+        self._run_git_async(
+            do_create,
+            on_success=on_success,
+            on_error=lambda e: QMessageBox.warning(self, "Could not create project", e),
+            status_msg="Creating project…",
+        )
 
     @staticmethod
     def _seed_templates(project: Project) -> None:
@@ -572,15 +768,26 @@ class MainWindow(QMainWindow):
         self._open_project_path(Path(path))
 
     def _open_project_path(self, path: Path) -> None:
-        try:
+        result_holder: list = [None, None]
+
+        def do_open():
             project = Project.load(path)
-            repo    = ConduitRepo.open(path)
-        except FileNotFoundError as e:
-            QMessageBox.warning(self, "Not a Conduit project", str(e))
-            return
-        except GitError:
-            repo = None
-        self.load_project(project, repo)
+            try:
+                repo = ConduitRepo.open(path)
+            except GitError:
+                repo = None
+            result_holder[0] = project
+            result_holder[1] = repo
+
+        def on_success(_: str) -> None:
+            self.load_project(result_holder[0], result_holder[1])
+
+        self._run_git_async(
+            do_open,
+            on_success=on_success,
+            on_error=lambda e: QMessageBox.warning(self, "Not a Conduit project", e),
+            status_msg="Opening project…",
+        )
 
     def _clone_project(self) -> None:
         dlg = CloneDialog(self)
@@ -717,18 +924,28 @@ class MainWindow(QMainWindow):
         self.task_pane.append_task(new_task)
 
     def _on_template_picked(self, task: TaskNode, template_path: Path) -> None:
-        import shutil
+        import shutil as _shutil
         asset_name = task.parent.name if task.parent else "asset"
         dest_name  = f"{asset_name}_{task.name}{template_path.suffix}"
         dest       = task.path / dest_name
-        shutil.copy2(template_path, dest)
+        _shutil.copy2(template_path, dest)
+
+        def _refresh():
+            self.file_pane.populate(task, self._repo)
+            self._update_detail_pane_async(task)
+
         if self._repo:
-            try:
-                self._repo.stage_file(dest)
-            except GitError:
-                pass
-        self.file_pane.populate(task, self._repo)
-        self._update_detail_pane(task)
+            def do_stage():
+                self._repo.stage_file(dest)  # type: ignore
+
+            self._run_git_async(
+                do_stage,
+                on_success=lambda _: _refresh(),
+                on_error=lambda _: _refresh(),
+                status_msg="Staging file…",
+            )
+        else:
+            _refresh()
 
     def _show_node_in_explorer(self) -> None:
         node   = self.folder_pane.get_selected_node()
@@ -737,7 +954,6 @@ class MainWindow(QMainWindow):
             self._open_path(target)
 
     def _open_in_explorer(self) -> None:
-        import subprocess
         file_path = self.file_pane.get_current_file()
         if not file_path:
             task = self.task_pane.get_selected_task()
@@ -751,7 +967,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _open_path(path: Path) -> None:
-        import subprocess, os
+        import os
         if sys.platform == "win32":
             os.startfile(str(path))
         elif sys.platform == "darwin":
@@ -772,7 +988,7 @@ class MainWindow(QMainWindow):
         if not self._project:
             QMessageBox.information(self, "No Project", "Open a project first.")
             return
-        dlg = ProjectSettingsDialog(self._project, self)
+        dlg = ProjectSettingsDialog(self._project, self._repo, self)
         if dlg.exec() == QDialog.Accepted:
             self._refresh_blender_opener()
 

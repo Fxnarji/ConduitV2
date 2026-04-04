@@ -2,10 +2,9 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-import os
 import git
 
-from .lfs import DEFAULT_LFS_PATTERNS, is_lfs_available, write_gitattributes
+from .lfs import DEFAULT_LFS_PATTERNS, _run, is_lfs_available, write_gitattributes
 from conduit.model.ignore import GITIGNORE_PATTERNS
 
 
@@ -50,8 +49,7 @@ class ConduitRepo:
         repo = git.Repo.init(str(path))
 
         if is_lfs_available():
-            subprocess.run(["git", "lfs", "install"], cwd=path,
-                           check=True, capture_output=True, text=True)
+            _run(["git", "lfs", "install"], cwd=path, check=True)
             write_gitattributes(path, lfs_patterns or DEFAULT_LFS_PATTERNS)
 
         gitignore_content = "\n".join(GITIGNORE_PATTERNS) + "\n"
@@ -78,10 +76,8 @@ class ConduitRepo:
 
         if is_lfs_available():
             try:
-                subprocess.run(["git", "lfs", "install"], cwd=dest,
-                               check=True, capture_output=True, text=True)
-                subprocess.run(["git", "lfs", "pull"], cwd=dest,
-                               check=True, capture_output=True, text=True)
+                _run(["git", "lfs", "install"], cwd=dest, check=True)
+                _run(["git", "lfs", "pull"], cwd=dest, check=True)
             except subprocess.CalledProcessError:
                 pass
 
@@ -118,14 +114,8 @@ class ConduitRepo:
         """
         try:
             rel_paths = [self._rel(p).as_posix() for p in paths]
-            subprocess.run(
-                ["git", "add"] + rel_paths,
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", message],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
+            _run(["git", "add"] + rel_paths, cwd=self.path, check=True)
+            _run(["git", "commit", "-m", message], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
             stderr = (e.stderr or "").strip()
             raise GitError(f"Commit failed:\n{stderr}") from e
@@ -138,35 +128,31 @@ class ConduitRepo:
         if is_lfs_available() and file_path.suffix:
             pattern = f"*{file_path.suffix.lower()}"
             try:
-                subprocess.run(
-                    ["git", "lfs", "track", pattern],
-                    cwd=self.path, check=True, capture_output=True, text=True,
-                )
-                # Stage .gitattributes in case the pattern was newly added
+                _run(["git", "lfs", "track", pattern], cwd=self.path, check=True)
                 gitattributes = self.path / ".gitattributes"
                 if gitattributes.exists():
-                    self._repo.index.add([str(self._rel(gitattributes))])
-            except (subprocess.CalledProcessError, git.GitCommandError):
+                    _run(["git", "add", str(self._rel(gitattributes))], cwd=self.path, check=True)
+            except subprocess.CalledProcessError:
                 pass
 
         try:
-            self._repo.index.add([str(self._rel(file_path))])
-        except git.GitCommandError as e:
-            raise GitError(f"Could not stage file:\n{e.stderr.strip()}") from e
+            _run(["git", "add", str(self._rel(file_path))], cwd=self.path, check=True)
+        except subprocess.CalledProcessError as e:
+            raise GitError(f"Could not stage file:\n{(e.stderr or '').strip()}") from e
 
     def push(self, remote: str = "origin") -> None:
         try:
             branch = self._current_branch()
-            self._repo.remote(remote).push(refspec=f"{branch}:{branch}")
-        except git.GitCommandError as e:
-            raise GitError(f"Push failed:\n{e.stderr.strip()}") from e
+            _run(["git", "push", remote, f"{branch}:{branch}"], cwd=self.path, check=True)
+        except subprocess.CalledProcessError as e:
+            raise GitError(f"Push failed:\n{(e.stderr or '').strip()}") from e
 
     def fetch(self, remote: str = "origin") -> None:
         """Download remote refs without touching the working tree."""
         try:
-            self._repo.remote(remote).fetch()
-        except git.GitCommandError as e:
-            raise GitError(f"Fetch failed:\n{e.stderr.strip()}") from e
+            _run(["git", "fetch", remote], cwd=self.path, check=True)
+        except subprocess.CalledProcessError as e:
+            raise GitError(f"Fetch failed:\n{(e.stderr or '').strip()}") from e
 
     def pull(self, remote: str = "origin") -> None:
         try:
@@ -183,10 +169,7 @@ class ConduitRepo:
     def commits_behind(self) -> int:
         """Number of commits on FETCH_HEAD not yet in HEAD (0 if unknown)."""
         try:
-            result = subprocess.run(
-                ["git", "rev-list", "HEAD..FETCH_HEAD", "--count"],
-                cwd=self.path, capture_output=True, text=True,
-            )
+            result = _run(["git", "rev-list", "HEAD..FETCH_HEAD", "--count"], cwd=self.path)
             return int(result.stdout.strip() or "0")
         except Exception:
             return 0
@@ -197,10 +180,7 @@ class ConduitRepo:
         Returns an empty list when FETCH_HEAD doesn't exist yet (no fetch run).
         """
         try:
-            result = subprocess.run(
-                ["git", "diff", "--name-only", "HEAD...FETCH_HEAD"],
-                cwd=self.path, capture_output=True, text=True,
-            )
+            result = _run(["git", "diff", "--name-only", "HEAD...FETCH_HEAD"], cwd=self.path)
             return [
                 self.path / line.strip()
                 for line in result.stdout.splitlines()
@@ -212,10 +192,7 @@ class ConduitRepo:
     def conflicted_files(self) -> list[Path]:
         """Files currently in a merge conflict state (unmerged)."""
         try:
-            result = subprocess.run(
-                ["git", "diff", "--name-only", "--diff-filter=U"],
-                cwd=self.path, capture_output=True, text=True,
-            )
+            result = _run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=self.path)
             return [
                 self.path / line.strip()
                 for line in result.stdout.splitlines()
@@ -228,14 +205,8 @@ class ConduitRepo:
         """Resolve a binary merge conflict by keeping the local (ours) version."""
         rel = self._rel(file_path).as_posix()
         try:
-            subprocess.run(
-                ["git", "checkout", "--ours", "--", rel],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
-            subprocess.run(
-                ["git", "add", "--", rel],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
+            _run(["git", "checkout", "--ours", "--", rel], cwd=self.path, check=True)
+            _run(["git", "add", "--", rel], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
             raise GitError(f"Resolve failed:\n{(e.stderr or '').strip()}") from e
 
@@ -243,34 +214,22 @@ class ConduitRepo:
         """Resolve a binary merge conflict by taking the remote (theirs) version."""
         rel = self._rel(file_path).as_posix()
         try:
-            subprocess.run(
-                ["git", "checkout", "--theirs", "--", rel],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
-            subprocess.run(
-                ["git", "add", "--", rel],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
+            _run(["git", "checkout", "--theirs", "--", rel], cwd=self.path, check=True)
+            _run(["git", "add", "--", rel], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
             raise GitError(f"Resolve failed:\n{(e.stderr or '').strip()}") from e
 
     def abort_merge(self) -> None:
         """Abort an in-progress merge, restoring the pre-pull state."""
         try:
-            subprocess.run(
-                ["git", "merge", "--abort"],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
+            _run(["git", "merge", "--abort"], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
             raise GitError(f"Abort merge failed:\n{(e.stderr or '').strip()}") from e
 
     def commit_merge(self) -> None:
         """Finalise a resolved merge with an automatic commit."""
         try:
-            subprocess.run(
-                ["git", "commit", "-m", "Resolve merge conflict (binary)"],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
+            _run(["git", "commit", "-m", "Resolve merge conflict (binary)"], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
             raise GitError(f"Commit failed:\n{(e.stderr or '').strip()}") from e
 
@@ -282,10 +241,7 @@ class ConduitRepo:
         """
         rel = self._rel(file_path).as_posix()
         try:
-            subprocess.run(
-                ["git", "checkout", commit_hash, "--", rel],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
+            _run(["git", "checkout", commit_hash, "--", rel], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
             raise GitError(f"Checkout failed:\n{(e.stderr or '').strip()}") from e
 
@@ -303,12 +259,8 @@ class ConduitRepo:
             return None
         rel = self._rel(file_path).as_posix()
         try:
-            result = subprocess.run(
-                ["git", "lfs", "locks"],
-                cwd=self.path, capture_output=True, text=True,
-            )
+            result = _run(["git", "lfs", "locks"], cwd=self.path)
             for line in result.stdout.splitlines():
-                # format: "<path>\t<owner>\tID:<id>"
                 parts = line.split("\t")
                 if len(parts) >= 2 and parts[0].strip() == rel:
                     return parts[1].strip()
@@ -320,10 +272,7 @@ class ConduitRepo:
         """Acquire an LFS lock on *file_path*."""
         rel = self._rel(file_path).as_posix()
         try:
-            subprocess.run(
-                ["git", "lfs", "lock", rel],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
+            _run(["git", "lfs", "lock", rel], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
             raise GitError(f"Lock failed:\n{(e.stderr or '').strip()}") from e
 
@@ -331,10 +280,7 @@ class ConduitRepo:
         """Release an LFS lock on *file_path*."""
         rel = self._rel(file_path).as_posix()
         try:
-            subprocess.run(
-                ["git", "lfs", "unlock", rel],
-                cwd=self.path, check=True, capture_output=True, text=True,
-            )
+            _run(["git", "lfs", "unlock", rel], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
             raise GitError(f"Unlock failed:\n{(e.stderr or '').strip()}") from e
 
@@ -438,29 +384,17 @@ class ConduitRepo:
         Returns None if the file didn't exist in that commit or on any error.
         """
         try:
-            ls = subprocess.run(
-                ["git", "ls-tree", commit_hash, "--", rel_posix],
-                cwd=self.path, capture_output=True, text=True,
-            )
+            ls = _run(["git", "ls-tree", commit_hash, "--", rel_posix], cwd=self.path)
             line = ls.stdout.strip()
             if not line:
                 return None
-            # format: "<mode> blob <hash>\t<name>"
             blob_hash = line.split()[2]
 
-            size_out = subprocess.run(
-                ["git", "cat-file", "-s", blob_hash],
-                cwd=self.path, capture_output=True, text=True,
-            )
+            size_out = _run(["git", "cat-file", "-s", blob_hash], cwd=self.path)
             blob_size = int(size_out.stdout.strip())
 
-            # LFS pointer files are tiny text blobs (~130 bytes).
-            # Read the content only when the blob is small enough to be one.
             if blob_size < 512:
-                ptr = subprocess.run(
-                    ["git", "cat-file", "-p", blob_hash],
-                    cwd=self.path, capture_output=True, text=True,
-                ).stdout
+                ptr = _run(["git", "cat-file", "-p", blob_hash], cwd=self.path).stdout
                 if "git-lfs" in ptr:
                     for ptr_line in ptr.splitlines():
                         if ptr_line.startswith("size "):
@@ -482,6 +416,7 @@ class ConduitRepo:
 
     def _current_branch(self) -> str:
         try:
-            return self._repo.active_branch.name
-        except TypeError:
+            result = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.path)
+            return result.stdout.strip() or "main"
+        except Exception:
             return "main"

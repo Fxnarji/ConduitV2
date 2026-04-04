@@ -11,22 +11,30 @@ from .scanner import scan_data_tree
 class ProjectConfig:
     name: str
     git_remote: str | None = None
-    blender_version: str | None = None
+    blender_version: str | None = None   # e.g. "4.3.2" — used to install/launch Blender
     lfs_patterns: list[str] = field(default_factory=list)
     version: int = 1
     blender_force_version: bool = False
-    blender_version_link: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> ProjectConfig:
+        # Accept legacy "blender_version_link" so old projects still load.
+        blender_version = data.get("blender_version")
+        if not blender_version:
+            link = data.get("blender_version_link") or ""
+            if link:
+                # Extract the version number from the old link format
+                # e.g. "Blender4.3/blender-4.3.2-windows-x64.zip" → "4.3.2"
+                filename = link.split("/")[-1]          # "blender-4.3.2-windows-x64.zip"
+                parts    = filename.split("-")          # ["blender", "4.3.2", ...]
+                blender_version = parts[1] if len(parts) > 1 else None
         return cls(
             name=data.get("name", "Unnamed Project"),
             git_remote=data.get("git_remote"),
-            blender_version=data.get("blender_version"),
+            blender_version=blender_version,
             lfs_patterns=data.get("lfs_patterns", []),
             version=data.get("version", 1),
             blender_force_version=data.get("blender_force_version", False),
-            blender_version_link=data.get("blender_version_link"),
         )
 
     def to_dict(self) -> dict:
@@ -37,7 +45,6 @@ class ProjectConfig:
             "blender_version": self.blender_version,
             "lfs_patterns": self.lfs_patterns,
             "blender_force_version": self.blender_force_version,
-            "blender_version_link": self.blender_version_link,
         }
 
 

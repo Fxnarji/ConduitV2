@@ -68,6 +68,7 @@ class FilePane:
     # ------------------------------------------------------------------
 
     def set_templates_dir(self, templates_dir: Path) -> None:
+        print(templates_dir)
         while self._tmpl_btn_layout.count():
             item = self._tmpl_btn_layout.takeAt(0)
             if item.widget():
