@@ -395,7 +395,7 @@ class MainWindow(QMainWindow):
                 self._set_status("", "#aaaaaa")
                 return
 
-            self._do_commit_and_push(changed, dlg.message)
+            self._do_commit_and_push(scope, dlg.message)
 
         def on_scan_error(e: str) -> None:
             self.detail_pane.set_repo_enabled(self._repo is not None)
@@ -409,13 +409,13 @@ class MainWindow(QMainWindow):
             status_msg="Scanning…",
         )
 
-    def _do_commit_and_push(self, changed: list[Path], msg: str) -> None:
+    def _do_commit_and_push(self, scope: Path | None, msg: str) -> None:
         if not self._repo:
             return
         has_remote = self._repo.has_remote()
 
         def commit_then_push():
-            self._repo.stage_and_commit(changed, msg)  # type: ignore
+            self._repo.stage_and_commit(scope, msg)  # type: ignore
             if has_remote:
                 self._repo.push()  # type: ignore
 

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(venv/Scripts/python -m pytest src/conduit/tests/test_git_layer.py -v)"
+    ]
+  }
+}

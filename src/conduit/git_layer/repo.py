@@ -106,37 +106,42 @@ class ConduitRepo:
     # Commit / Push / Pull
     # ------------------------------------------------------------------
 
-    def stage_and_commit(self, paths: list[Path], message: str) -> None:
-        """Stage the given paths and create a commit.
+    def stage_and_commit(self, scope: Path | None, message: str) -> None:
+        """Stage all changes within *scope* (or the whole repo if None) and commit.
 
-        Uses subprocess git directly (faster than GitPython's index API,
-        especially for large LFS-tracked files).
+        Uses the scope directory as the git working directory so that path
+        encoding — including special characters like brackets — is handled
+        entirely by git rather than by Python path manipulation.
         """
+        work_dir = scope.resolve() if scope else self.path.resolve()
         try:
-            rel_paths = [self._rel(p).as_posix() for p in paths]
-            _run(["git", "add"] + rel_paths, cwd=self.path, check=True)
+            _run(["git", "add", "--", "."], cwd=work_dir, check=True)
+            staged = _run(["git", "diff", "--cached", "--quiet"], cwd=self.path)
+            if staged.returncode == 0:
+                raise GitError("Nothing to commit")
             _run(["git", "commit", "-m", message], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
-            stderr = (e.stderr or "").strip()
-            raise GitError(f"Commit failed:\n{stderr}") from e
+            raise GitError(f"Commit failed:\n{(e.stderr or '').strip()}") from e
 
     def stage_file(self, file_path: Path) -> None:
         """Ensure the file's extension is LFS-tracked, then stage the file.
 
         Safe to call even when LFS is not installed — falls back to plain staging.
         """
+        if not isinstance(file_path, Path):
+            raise GitError(f"Invalid path type: {type(file_path).__name__}")
         if is_lfs_available() and file_path.suffix:
             pattern = f"*{file_path.suffix.lower()}"
             try:
                 _run(["git", "lfs", "track", pattern], cwd=self.path, check=True)
                 gitattributes = self.path / ".gitattributes"
                 if gitattributes.exists():
-                    _run(["git", "add", str(self._rel(gitattributes))], cwd=self.path, check=True)
+                    _run(["git", "add", "--", self._rel(gitattributes).as_posix()], cwd=self.path, check=True)
             except subprocess.CalledProcessError:
                 pass
 
         try:
-            _run(["git", "add", str(self._rel(file_path))], cwd=self.path, check=True)
+            _run(["git", "add", "--", self._rel(file_path).as_posix()], cwd=self.path, check=True)
         except subprocess.CalledProcessError as e:
             raise GitError(f"Could not stage file:\n{(e.stderr or '').strip()}") from e
 
@@ -157,6 +162,8 @@ class ConduitRepo:
     def pull(self, remote: str = "origin") -> None:
         try:
             self._repo.remote(remote).pull()
+        except ValueError as e:
+            raise GitError(f"Pull failed:\n{e}") from e
         except git.GitCommandError as e:
             conflicts = self.conflicted_files()
             if conflicts:
@@ -335,21 +342,27 @@ class ConduitRepo:
 
     def changed_files(self, under: Path | None = None) -> list[Path]:
         """All modified/untracked files, optionally filtered to a subtree."""
-        untracked = {self.path / p for p in self._repo.untracked_files}
+        repo_root = self.path.resolve()
+
+        untracked = {repo_root / p for p in self._repo.untracked_files}
 
         modified: set[Path] = set()
         for d in self._repo.index.diff(None):
-            modified.add(self.path / d.a_path)
+            modified.add(repo_root / d.a_path)
         try:
             for d in self._repo.index.diff("HEAD"):
-                modified.add(self.path / d.a_path)
+                modified.add(repo_root / d.a_path)
         except Exception:
             pass
 
-        all_changed = list(untracked | modified)
+        all_changed = [
+            p for p in untracked | modified
+            if p.is_absolute() and p.resolve().is_relative_to(repo_root)
+        ]
 
         if under:
-            under = under.resolve()
+            import os
+            under = Path(os.path.normpath(str(under))).resolve()
             all_changed = [p for p in all_changed if p.is_relative_to(under)]
 
         return sorted(all_changed)
@@ -408,11 +421,25 @@ class ConduitRepo:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _rel(self, path: Path) -> Path:
+    def _rel(self, path: Path | str) -> Path:
+        if isinstance(path, str):
+            path = Path(path)
+        if not path.is_absolute():
+            raise GitError(
+                f"Internal error — relative path passed to _rel():\n"
+                f"  path: {path!r}\n"
+                f"  (expected an absolute path inside {self.path!r})"
+            )
+        resolved = path.resolve()
         try:
-            return path.resolve().relative_to(self.path.resolve())
+            return resolved.relative_to(self.path.resolve())
         except ValueError:
-            return path
+            raise GitError(
+                f"Path is outside repository:\n"
+                f"  path: {path!r}\n"
+                f"  resolved: {resolved!r}\n"
+                f"  repo: {self.path!r}"
+            )
 
     def _current_branch(self) -> str:
         try:
